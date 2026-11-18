@@ -1,0 +1,72 @@
+[package]
+name = "agent-ing"
+version = "0.1.0"
+description = "Cross-platform floating HUD & completion notifier for Codex, Claude Code, and Antigravity"
+authors = ["agent-ing"]
+edition = "2021"
+default-run = "agent-ing"
+
+[lib]
+name = "agent_ing_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "agent-ing"
+path = "src/main.rs"
+
+[[bin]]
+name = "agent-ing-hook"
+path = "src/bin/agent_ing_hook.rs"
+
+[build-dependencies]
+tauri-build = { version = "=2.7.3", features = [] }
+
+[dependencies]
+tauri = { version = "=2.12.4", features = ["tray-icon", "macos-private-api", "image-png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
+axum = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+notify = "7"
+sysinfo = "0.33"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "6"
+uuid = { version = "1", features = ["v4"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tao = "0.37.1"
+objc2 = "=0.6.4"
+objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSPanel",
+  "NSWindow",
+  "NSRunningApplication",
+  "NSApplication",
+  "NSScreen",
+  "NSColor",
+  "NSResponder",
+  "NSView",
+] }
+objc2-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "NSString",
+  "NSArray",
+  "NSGeometry",
+] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+tempfile = "3"
+
+# Patched tao from agent-hud-open (Apache-2.0): enables native macOS non-activating NSPanel
+# at window allocation time so clicking the HUD or Toast never steals focus from the user's IDE.
+[patch.crates-io]
+tao = { git = "https://github.com/jazzenchen/tao", rev = "e5c8659a4b91a44e806bafcd63ece1f11fcba503" }
