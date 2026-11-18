@@ -123,7 +123,8 @@ impl AppState {
             a.phase
                 .sort_rank()
                 .cmp(&b.phase.sort_rank())
-                .then_with(|| b.updated_at_ms.cmp(&a.updated_at_ms))
+                .then_with(|| b.started_at_ms.cmp(&a.started_at_ms))
+                .then_with(|| a.id.cmp(&b.id))
         });
         sessions.truncate(25);
 
@@ -143,6 +144,10 @@ impl AppState {
             working_count,
             attention_count,
         }
+    }
+
+    pub fn session(&self, session_id: &str) -> Option<AgentSession> {
+        self.inner.read().unwrap().sessions.get(session_id).cloned()
     }
 
     pub fn dismiss_session(&self, app: &AppHandle, session_id: &str) -> DashboardSnapshot {
@@ -190,6 +195,9 @@ impl AppState {
                     }
                     if enriched.last_summary.is_none() && m.last_summary.is_some() {
                         enriched.last_summary = m.last_summary;
+                    }
+                    if m.provider == AgentProvider::Codex && m.host_app.as_deref() == Some("Codex") {
+                        enriched.host_app = m.host_app;
                     }
                     guard.sessions.insert(id, enriched);
                     return None;
@@ -297,9 +305,7 @@ impl AppState {
                         ) || (prev_phase.is_none() && m.source_channel == SourceChannel::Hook) =>
                     {
                         let dur = computed_duration_ms.unwrap_or(0);
-                        let passes_threshold = m.source_channel == SourceChannel::Demo
-                            || dur >= min_completion_ms
-                            || prev_phase.is_none();
+                        let passes_threshold = dur >= min_completion_ms || prev_phase.is_none();
                         let dedup = format!("{id}:completed:{turn_anchor}");
                         if passes_threshold && guard.notified_keys.insert(dedup) {
                             toast_to_emit = Some(ToastPayload {
@@ -417,6 +423,39 @@ pub fn truncate_chars(s: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn output_updates_do_not_reorder_sessions_in_the_same_phase() {
+        let state = AppState::new();
+        let update = |id: &str, time| {
+            state.apply_mutation(
+                None,
+                SessionMutation {
+                    raw_session_id: id.into(),
+                    provider: AgentProvider::Codex,
+                    cwd: None,
+                    git_branch: None,
+                    title: None,
+                    phase: SessionPhase::Working,
+                    current_action: None,
+                    step_count: None,
+                    last_summary: None,
+                    host_pid: None,
+                    host_app: None,
+                    source_channel: SourceChannel::Passive,
+                    updated_at_ms: Some(time),
+                    suppress_toast: true,
+                },
+            );
+        };
+        update("first", 1);
+        update("second", 2);
+        update("first", 3);
+        let sessions = state.snapshot().sessions;
+        assert_eq!(sessions[0].raw_session_id, "second");
+        assert_eq!(sessions[1].raw_session_id, "first");
+        assert_eq!(sessions[1].updated_at_ms, 3);
+    }
 
     #[test]
     fn state_machine_emits_approval_and_completion_toasts_once() {

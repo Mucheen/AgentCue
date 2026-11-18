@@ -1,4 +1,4 @@
-use crate::models::{AgentProvider, AppSettings, HudMode, ToastCorner};
+use crate::models::{AgentProvider, AgentSession, AppSettings, HudMode, ToastCorner};
 use std::process::Command;
 use std::sync::Mutex;
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -6,6 +6,9 @@ use tauri::{
     AppHandle, LogicalPosition, LogicalSize, Manager, Position, Size, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
+
+#[cfg(target_os = "macos")]
+mod antigravity;
 
 pub const CAPSULE_W: f64 = 236.0;
 pub const CAPSULE_H: f64 = 64.0;
@@ -332,6 +335,7 @@ pub fn detect_host_from_pid(start_pid: u32, env_term: Option<&str>) -> (Option<u
         ("kitty", "kitty"),
         ("terminal", "Terminal"),
         ("windowsterminal", "Windows Terminal"),
+        ("chatgpt", "Codex"),
         ("codex", "Codex"),
         ("claude", "Claude"),
         ("zed", "Zed"),
@@ -346,7 +350,9 @@ pub fn detect_host_from_pid(start_pid: u32, env_term: Option<&str>) -> (Option<u
         for (needle, friendly) in known_hosts {
             if pname == *needle || pname.starts_with(&format!("{needle}.")) {
                 // Skip bare CLI `codex` / `claude` if there is a parent GUI terminal above it
-                if (*needle == "codex" || *needle == "claude") && proc_info.parent().is_some() {
+                if (*needle == "codex" || *needle == "claude")
+                    && proc_info.parent().is_some_and(|pid| pid.as_u32() > 1)
+                {
                     continue;
                 }
                 return (Some(cur.as_u32()), Some((*friendly).to_string()));
@@ -363,154 +369,68 @@ pub fn detect_host_from_pid(start_pid: u32, env_term: Option<&str>) -> (Option<u
     (Some(start_pid), None)
 }
 
-pub fn focus_session_host(
+fn desktop_session_url(
     provider: AgentProvider,
-    host_pid: Option<u32>,
     host_app: Option<&str>,
-    _cwd: &str,
-) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(app_name) = host_app {
-            if Command::new("open")
-                .args(["-a", app_name])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
-        }
-
-        // Try activating by PID via NSRunningApplication if it's a GUI bundle
-        if let Some(pid) = host_pid {
-            use objc2::rc::Retained;
-            use objc2_app_kit::{NSApplicationActivationOptions, NSRunningApplication};
-            unsafe {
-                let running: Option<Retained<NSRunningApplication>> = objc2::msg_send![
-                    objc2::class!(NSRunningApplication),
-                    runningApplicationWithProcessIdentifier: pid as i32
-                ];
-                if let Some(app_inst) = running {
-                    #[allow(deprecated)]
-                    let ok = app_inst.activateWithOptions(
-                        NSApplicationActivationOptions::ActivateIgnoringOtherApps,
-                    );
-                    if ok {
-                        return Ok(());
-                    }
-                }
-            }
-        }
-
-        // Provider-aware fallback candidates on macOS
-        let candidates: &[&str] = match provider {
-            AgentProvider::Antigravity => &["Antigravity", "Google Antigravity", "Cursor", "Visual Studio Code"],
-            AgentProvider::Codex => &["Codex", "Ghostty", "iTerm", "Warp", "Terminal"],
-            AgentProvider::ClaudeCode => &["Ghostty", "iTerm", "Warp", "Cursor", "Terminal", "Claude"],
-        };
-        for app in candidates {
-            if Command::new("open")
-                .args(["-a", app])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-            {
-                return Ok(());
-            }
-        }
-        Err("未能定位对应宿主应用窗口".into())
+    session_id: &str,
+) -> Option<String> {
+    if provider != AgentProvider::Codex || host_app != Some("Codex") {
+        return None;
     }
+    let thread_id = uuid::Uuid::parse_str(session_id).ok()?;
+    Some(format!("codex://threads/{thread_id}"))
+}
+
+pub fn open_tracked_session(session: &AgentSession) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    if session.provider == AgentProvider::Antigravity {
+        return antigravity::open_conversation(&session.raw_session_id);
+    }
+
+    let url = desktop_session_url(
+        session.provider,
+        session.host_app.as_deref(),
+        &session.raw_session_id,
+    )
+    .ok_or("此会话没有可用的精确跳转入口")?;
+
+    #[cfg(target_os = "macos")]
+    let opened = Command::new("open")
+        .arg(&url)
+        .status()
+        .is_ok_and(|status| status.success());
 
     #[cfg(target_os = "windows")]
-    {
-        use windows_sys::Win32::{
-            Foundation::{BOOL, HWND, LPARAM},
-            System::Threading::{AttachThreadInput, GetCurrentThreadId},
-            UI::WindowsAndMessaging::{
-                BringWindowToTop, EnumWindows, GetForegroundWindow, GetWindowThreadProcessId,
-                IsWindowVisible, SetForegroundWindow, ShowWindow, SW_RESTORE,
-            },
+    let opened = {
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+        let wide_url: Vec<u16> = url.encode_utf16().chain(std::iter::once(0)).collect();
+        let result = unsafe {
+            ShellExecuteW(null_mut(), null(), wide_url.as_ptr(), null(), null(), SW_SHOWNORMAL)
         };
-
-        let host_hint = match host_app {
-            Some("Visual Studio Code") => Some("Code"),
-            Some("Windows Terminal") => Some("WindowsTerminal"),
-            name => name,
-        };
-        let fallback_names: &[&str] = match provider {
-            AgentProvider::Antigravity => &["Antigravity", "Antigravity IDE"],
-            AgentProvider::Codex => &["Codex", "WindowsTerminal", "Code"],
-            AgentProvider::ClaudeCode => &["Claude", "WindowsTerminal", "Code", "Cursor"],
-        };
-
-        let mut processes = System::new();
-        processes.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
-        let mut preferred_pids = Vec::new();
-        preferred_pids.extend(host_pid);
-        for name in host_hint.into_iter().chain(fallback_names.iter().copied()) {
-            preferred_pids.extend(processes.processes().values().filter_map(|p| {
-                let executable = p.name().to_string_lossy();
-                let stem = executable.strip_suffix(".exe").unwrap_or(&executable);
-                stem.eq_ignore_ascii_case(name).then(|| p.pid().as_u32())
-            }));
-        }
-
-        struct Candidate<'a> {
-            pids: &'a [u32],
-            found: HWND,
-            rank: usize,
-        }
-        unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
-            let ctx = &mut *(lparam as *mut Candidate<'_>);
-            if IsWindowVisible(hwnd) != 0 {
-                let mut pid = 0u32;
-                GetWindowThreadProcessId(hwnd, &mut pid);
-                if let Some(rank) = ctx.pids.iter().take(ctx.rank).position(|candidate| *candidate == pid) {
-                    ctx.found = hwnd;
-                    ctx.rank = rank;
-                }
-            }
-            i32::from(ctx.rank > 0)
-        }
-        let mut target = Candidate {
-            pids: &preferred_pids,
-            found: core::ptr::null_mut(),
-            rank: preferred_pids.len(),
-        };
-        unsafe {
-            EnumWindows(Some(enum_cb), &mut target as *mut Candidate<'_> as LPARAM);
-            if target.found.is_null() {
-                return Err("未能定位对应宿主应用窗口".into());
-            }
-            let foreground = GetForegroundWindow();
-            let current_thread = GetCurrentThreadId();
-            let foreground_thread = if foreground.is_null() {
-                0
-            } else {
-                GetWindowThreadProcessId(foreground, core::ptr::null_mut())
-            };
-            let attached = foreground_thread != 0
-                && foreground_thread != current_thread
-                && AttachThreadInput(current_thread, foreground_thread, 1) != 0;
-            ShowWindow(target.found, SW_RESTORE);
-            BringWindowToTop(target.found);
-            let activated = SetForegroundWindow(target.found) != 0;
-            if attached {
-                AttachThreadInput(current_thread, foreground_thread, 0);
-            }
-            if !activated && GetForegroundWindow() != target.found {
-                return Err("系统未能将宿主窗口置前".into());
-            }
-        }
-        Ok(())
-    }
+        result as isize > 32
+    };
 
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
-    {
-        let _ = (provider, host_pid, host_app);
-        Ok(())
-    }
+    let opened = {
+        let _ = url;
+        false
+    };
+
+    opened.then_some(()).ok_or_else(|| "系统无法打开对应的 Codex 会话".into())
+}
+
+#[cfg(test)]
+#[test]
+fn desktop_session_links_require_a_codex_desktop_thread_id() {
+    let id = "7f4048f5-e497-4911-9ab6-8be48f7c9778";
+    assert_eq!(
+        desktop_session_url(AgentProvider::Codex, Some("Codex"), id),
+        Some(format!("codex://threads/{id}"))
+    );
+    assert!(desktop_session_url(AgentProvider::Codex, Some("Codex"), "new").is_none());
+    assert!(desktop_session_url(AgentProvider::Codex, Some("Ghostty"), id).is_none());
+    assert!(desktop_session_url(AgentProvider::Antigravity, Some("Antigravity"), id).is_none());
 }
 
 pub fn open_folder_in_os(cwd: &str) -> Result<(), String> {

@@ -9,7 +9,6 @@ import {
   ExternalLink,
   FolderOpen,
   GitBranch,
-  Play,
   Settings,
   ShieldAlert,
   Sparkles,
@@ -243,12 +242,12 @@ export const HudWindow: React.FC = () => {
           onClick={handleCapsuleClick}
           className={`w-full h-full text-left cursor-pointer flex items-center justify-between gap-2.5 px-3.5 backdrop-blur-xl transition-colors ${
             isTopIsland
-              ? "rounded-b-2xl rounded-t-md bg-[#0D0F14]/96 border border-white/12 shadow-[0_8px_24px_rgba(0,0,0,0.55)]"
+              ? "rounded-b-2xl rounded-t-md bg-[#0D0F14]/96 border border-white/12"
               : hasAttention
-              ? "rounded-full bg-[#16130E]/95 border border-amber-400/45 shadow-[0_8px_26px_rgba(245,158,11,0.28)]"
+              ? "rounded-full bg-[#16130E]/95 border border-amber-400/45"
               : hasWorking
-              ? "rounded-full bg-[#10141C]/94 border border-emerald-400/35 shadow-[0_10px_28px_rgba(0,0,0,0.5)]"
-              : "rounded-full bg-[#11131A]/92 border border-white/12 hover:border-white/25 shadow-[0_10px_26px_rgba(0,0,0,0.48)]"
+              ? "rounded-full bg-[#10141C]/94 border border-emerald-400/35"
+              : "rounded-full bg-[#11131A]/92 border border-white/12 hover:border-white/25"
           }`}
         >
           {/* Left live radar indicator */}
@@ -330,7 +329,7 @@ export const HudWindow: React.FC = () => {
         initial={{ opacity: 0, scale: 0.96, y: -6 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ type: "spring", stiffness: 420, damping: 30 }}
-        className="w-full h-full flex flex-col rounded-2xl bg-[#10131B]/96 backdrop-blur-2xl border border-white/12 shadow-[0_16px_40px_rgba(0,0,0,0.62)] overflow-hidden"
+        className="w-full h-full flex flex-col rounded-2xl bg-[#10131B]/96 backdrop-blur-2xl border border-white/12 overflow-hidden"
       >
         {/* Top Header */}
         <div
@@ -350,14 +349,6 @@ export const HudWindow: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-1">
-            <button
-              onClick={() => void invoke("trigger_demo")}
-              className="flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-medium bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/25 transition-colors cursor-pointer"
-              title="模拟多 Agent 进度与完成弹窗"
-            >
-              <Play className="w-3 h-3 fill-current" />
-              演示
-            </button>
             <button
               onClick={() => setShowSettings((v) => !v)}
               className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
@@ -599,7 +590,7 @@ export const HudWindow: React.FC = () => {
                     <Sparkles className="w-6 h-6 text-white/25" />
                     <p className="text-[12.5px]">当前分类下暂无活跃 Agent 会话</p>
                     <p className="text-[11px] text-white/35">
-                      启动 Codex、Claude Code 或 Antigravity 后将自动识别，也可点击右上角「演示」预览完整效果
+                      启动 Codex、Claude Code 或 Antigravity 后将自动识别会话
                     </p>
                   </div>
                 ) : (
@@ -624,23 +615,31 @@ const SessionCard: React.FC<{ session: AgentSession; nowMs: number }> = ({
   session,
   nowMs,
 }) => {
+  const [jumpError, setJumpError] = useState<string | null>(null);
   const meta = PROVIDER_META[session.provider];
   const isWorking = session.phase === "working";
   const isWaiting = session.phase === "waiting_approval";
   const isFailed = session.phase === "failed";
+  const phaseLabel = {
+    working: "正在执行…",
+    waiting_approval: "等待确认",
+    failed: "执行失败",
+    completed: "已完成",
+    idle: "空闲",
+  }[session.phase];
 
   const liveElapsedMs =
     (isWorking || isWaiting) && session.turnStartedAtMs
       ? Math.max(0, nowMs - session.turnStartedAtMs)
       : session.lastDurationMs;
 
-  const handleJump = () => {
-    void invoke("jump_to_session", {
-      provider: session.provider,
-      hostPid: session.hostPid,
-      hostApp: session.hostApp,
-      cwd: session.cwd,
-    });
+  const handleJump = async () => {
+    setJumpError(null);
+    try {
+      await invoke("jump_to_session", { sessionId: session.id });
+    } catch (error) {
+      setJumpError(String(error));
+    }
   };
 
   const handleOpenFolder = () => {
@@ -731,8 +730,10 @@ const SessionCard: React.FC<{ session: AgentSession; nowMs: number }> = ({
             <span className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse shrink-0" />
           ) : isFailed ? (
             <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-          ) : (
+          ) : session.phase === "completed" ? (
             <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400/80 shrink-0" />
+          ) : (
+            <span className="h-2 w-2 rounded-full bg-slate-400 shrink-0" />
           )}
 
           <span
@@ -748,7 +749,7 @@ const SessionCard: React.FC<{ session: AgentSession; nowMs: number }> = ({
           >
             {session.currentAction ||
               session.lastSummary ||
-              (isWorking ? "正在执行…" : "已完成")}
+              phaseLabel}
           </span>
         </div>
 
@@ -771,17 +772,18 @@ const SessionCard: React.FC<{ session: AgentSession; nowMs: number }> = ({
           <button
             onClick={handleJump}
             className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10.5px] font-medium bg-white/8 hover:bg-white/16 text-white/85 transition-colors cursor-pointer"
-            title={
-              session.hostApp
-                ? `跳转至 ${session.hostApp}`
-                : "跳转至对应终端 / IDE"
-            }
+            title="打开对应会话"
           >
-            跳回
+            跳回会话
             <ExternalLink className="w-2.5 h-2.5" />
           </button>
         </div>
       </div>
+      {jumpError && (
+        <p role="status" className="mt-2 text-[11px] text-amber-200">
+          {jumpError}
+        </p>
+      )}
     </motion.div>
   );
 };

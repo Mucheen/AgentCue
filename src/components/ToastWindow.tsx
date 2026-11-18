@@ -20,6 +20,7 @@ import { playToastChime } from "../utils/sound";
 interface ActiveToast extends ToastPayload {
   expiresAt: number;
   totalMs: number;
+  jumpError?: string;
 }
 
 export const ToastWindow: React.FC = () => {
@@ -85,14 +86,15 @@ export const ToastWindow: React.FC = () => {
     setToasts((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
-  const jumpAndDismiss = useCallback((t: ActiveToast) => {
-    void invoke("jump_to_session", {
-      provider: t.provider,
-      hostPid: t.hostPid,
-      hostApp: t.hostApp,
-      cwd: t.cwd,
-    });
-    setToasts((prev) => prev.filter((item) => item.id !== t.id));
+  const jumpAndDismiss = useCallback(async (t: ActiveToast) => {
+    try {
+      await invoke("jump_to_session", { sessionId: t.sessionId });
+      setToasts((prev) => prev.filter((item) => item.id !== t.id));
+    } catch (error) {
+      setToasts((prev) => prev.map((item) =>
+        item.id === t.id ? { ...item, jumpError: String(error) } : item
+      ));
+    }
   }, []);
 
   return (
@@ -114,7 +116,7 @@ export const ToastWindow: React.FC = () => {
               animate={{ opacity: 1, x: 0, scale: 1 }}
               exit={{ opacity: 0, x: 28, scale: 0.95 }}
               transition={{ type: "spring", stiffness: 430, damping: 29 }}
-              className={`relative shrink-0 rounded-2xl p-3 backdrop-blur-2xl border shadow-[0_14px_34px_rgba(0,0,0,0.58)] overflow-hidden ${
+              className={`relative shrink-0 rounded-2xl p-3 backdrop-blur-2xl border overflow-hidden ${
                 isApproval
                   ? "bg-[#19140C]/96 border-amber-400/50"
                   : isFailed
@@ -164,7 +166,7 @@ export const ToastWindow: React.FC = () => {
               </div>
 
               <div className="mt-0.5 text-[11px] text-white/62 line-clamp-2 leading-snug">
-                {t.message}
+                {t.jumpError ?? t.message}
               </div>
 
               <div className="mt-2.5 flex items-center justify-end gap-2">
@@ -182,7 +184,7 @@ export const ToastWindow: React.FC = () => {
                       : "bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-200 border border-emerald-400/35"
                   }`}
                 >
-                  跳回窗口处理
+                  跳回会话
                   <ExternalLink className="w-3 h-3" />
                 </button>
               </div>

@@ -214,12 +214,13 @@ fn antigravity_phase(status: &str, not_fully_idle: bool, transcript_busy: bool) 
     match status {
         "IDLE" if !not_fully_idle => SessionPhase::Completed,
         "BUSY" | "RUNNING" | "WORKING" | "CANCELING" => SessionPhase::Working,
-        status if status.contains("WAIT") || status.contains("APPROV") => {
+        "WAITING_APPROVAL" | "WAITING_FOR_APPROVAL" | "AWAITING_APPROVAL"
+        | "WAITING_FOR_USER" | "PENDING_APPROVAL" => {
             SessionPhase::WaitingApproval
         }
-        status if status.contains("ERR") || status.contains("FAIL") => SessionPhase::Failed,
+        "ERROR" | "FAILED" | "FAILURE" => SessionPhase::Failed,
         _ if not_fully_idle || transcript_busy => SessionPhase::Working,
-        _ => SessionPhase::Completed,
+        _ => SessionPhase::Idle,
     }
 }
 
@@ -322,11 +323,48 @@ mod tests {
             ("CASCADE_RUN_STATUS_RUNNING", false, false, SessionPhase::Working),
             ("CASCADE_RUN_STATUS_CANCELING", false, false, SessionPhase::Working),
             ("WAITING_APPROVAL", true, true, SessionPhase::WaitingApproval),
+            ("WAITING_FOR_TOOL", true, true, SessionPhase::Working),
             ("FAILED", true, true, SessionPhase::Failed),
             ("CASCADE_RUN_STATUS_UNSPECIFIED", false, true, SessionPhase::Working),
+            ("CASCADE_RUN_STATUS_UNSPECIFIED", false, false, SessionPhase::Idle),
         ] {
             assert_eq!(antigravity_phase(status, not_fully_idle, tail_busy), expected, "{status}");
         }
+    }
+
+    #[test]
+    fn codex_output_keeps_turn_active_until_completion() {
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        let output = r#"{"type":"session_meta","payload":{"id":"codex-session","originator":"Codex Desktop"}}
+{"type":"event_msg","payload":{"type":"task_started"}}
+{"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"正在检查输出"}]}}
+"#;
+        std::fs::write(transcript.path(), output).unwrap();
+        let titles = HashMap::new();
+        let progress = parse_codex_rollout(transcript.path(), 1, &titles, false).unwrap();
+        assert_eq!(progress.phase, SessionPhase::Working);
+        assert_eq!(progress.host_app.as_deref(), Some("Codex"));
+
+        let end = r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#;
+        std::fs::write(transcript.path(), format!("{output}{end}\n")).unwrap();
+        let completed = parse_codex_rollout(transcript.path(), 2, &titles, false).unwrap();
+        assert_eq!(completed.phase, SessionPhase::Completed);
+    }
+
+    #[test]
+    fn claude_output_requires_a_stop_reason_or_turn_end() {
+        let transcript = tempfile::NamedTempFile::new().unwrap();
+        let output = r#"{"type":"user","sessionId":"claude-session","message":{"content":"检查当前进度"}}
+{"type":"assistant","sessionId":"claude-session","message":{"stop_reason":null,"content":[{"type":"text","text":"正在检查输出"}]}}
+"#;
+        std::fs::write(transcript.path(), output).unwrap();
+        let progress = parse_claude_transcript(transcript.path(), 1, false).unwrap();
+        assert_eq!(progress.phase, SessionPhase::Working);
+
+        let end = r#"{"type":"system","subtype":"turn_duration","durationMs":8200}"#;
+        std::fs::write(transcript.path(), format!("{output}{end}\n")).unwrap();
+        let completed = parse_claude_transcript(transcript.path(), 2, false).unwrap();
+        assert_eq!(completed.phase, SessionPhase::Completed);
     }
 }
 
@@ -362,7 +400,7 @@ fn scan_codex(home: &Path, suppress_toast: bool) -> Vec<SessionMutation> {
         if now_ms - mtime_ms > 12 * 3600 * 1000 {
             continue;
         }
-        if let Some(m) = parse_codex_rollout(&path, mtime_ms, now_ms, &thread_titles, suppress_toast)
+        if let Some(m) = parse_codex_rollout(&path, mtime_ms, &thread_titles, suppress_toast)
         {
             out.push(m);
         }
@@ -374,7 +412,6 @@ fn scan_codex(home: &Path, suppress_toast: bool) -> Vec<SessionMutation> {
 fn parse_codex_rollout(
     path: &Path,
     mtime_ms: i64,
-    now_ms: i64,
     titles: &HashMap<String, String>,
     suppress_toast: bool,
 ) -> Option<SessionMutation> {
@@ -398,6 +435,8 @@ fn parse_codex_rollout(
         .get("cwd")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let desktop_host = (payload.get("originator").and_then(Value::as_str) == Some("Codex Desktop"))
+        .then(|| "Codex".to_string());
     let git_branch = payload
         .get("git")
         .and_then(|g| g.get("branch"))
@@ -405,7 +444,7 @@ fn parse_codex_rollout(
         .map(|s| s.to_string());
 
     let tail = read_tail_string(path, 48 * 1024)?;
-    let mut in_turn = false;
+    let mut phase = SessionPhase::Idle;
     let mut latest_action: Option<String> = None;
     let mut latest_summary: Option<String> = None;
     let mut user_prompt: Option<String> = None;
@@ -425,12 +464,12 @@ fn parse_codex_rollout(
                     .and_then(|x| x.as_str())
                     .unwrap_or("");
                 match ev_type {
-                    "task_started" => {
-                        in_turn = true;
+                    "task_started" | "turn_started" => {
+                        phase = SessionPhase::Working;
                         latest_action = Some("正在分析任务…".to_string());
                     }
-                    "task_complete" | "turn_complete" | "turn_aborted" => {
-                        in_turn = false;
+                    "task_complete" | "turn_complete" => {
+                        phase = SessionPhase::Completed;
                         if let Some(msg) = p
                             .and_then(|x| x.get("last_agent_message"))
                             .and_then(|x| x.as_str())
@@ -438,6 +477,7 @@ fn parse_codex_rollout(
                             latest_summary = Some(msg.to_string());
                         }
                     }
+                    "turn_aborted" => phase = SessionPhase::Idle,
                     "user_message" => {
                         if let Some(msg) = p.and_then(|x| x.get("message")).and_then(|x| x.as_str())
                         {
@@ -455,7 +495,7 @@ fn parse_codex_rollout(
                 match item_type {
                     "function_call" | "custom_tool_call" => {
                         step_count += 1;
-                        in_turn = true;
+                        phase = SessionPhase::Working;
                         let name = p
                             .and_then(|x| x.get("name"))
                             .and_then(|x| x.as_str())
@@ -463,7 +503,7 @@ fn parse_codex_rollout(
                         latest_action = Some(format!("执行工具: {name}"));
                     }
                     "reasoning" => {
-                        if in_turn && latest_action.is_none() {
+                        if phase == SessionPhase::Working && latest_action.is_none() {
                             latest_action = Some("正在深度推理…".to_string());
                         }
                     }
@@ -487,13 +527,6 @@ fn parse_codex_rollout(
         }
     }
 
-    let is_working = in_turn && (now_ms - mtime_ms) < 45_000;
-    let phase = if is_working {
-        SessionPhase::Working
-    } else {
-        SessionPhase::Completed
-    };
-
     let title = titles.get(&session_id).cloned().or(user_prompt);
 
     Some(SessionMutation {
@@ -503,11 +536,11 @@ fn parse_codex_rollout(
         git_branch,
         title,
         phase,
-        current_action: if is_working { latest_action } else { None },
+        current_action: if phase == SessionPhase::Working { latest_action } else { None },
         step_count: (step_count > 0).then_some(step_count),
         last_summary: latest_summary,
         host_pid: None,
-        host_app: Some("Codex".to_string()),
+        host_app: desktop_host,
         source_channel: SourceChannel::Passive,
         updated_at_ms: Some(mtime_ms),
         suppress_toast,
@@ -544,7 +577,7 @@ fn scan_claude(home: &Path, suppress_toast: bool) -> Vec<SessionMutation> {
         if now_ms - mtime_ms > 12 * 3600 * 1000 {
             continue;
         }
-        if let Some(m) = parse_claude_transcript(&path, mtime_ms, now_ms, suppress_toast) {
+        if let Some(m) = parse_claude_transcript(&path, mtime_ms, suppress_toast) {
             out.push(m);
         }
     }
@@ -555,7 +588,6 @@ fn scan_claude(home: &Path, suppress_toast: bool) -> Vec<SessionMutation> {
 fn parse_claude_transcript(
     path: &Path,
     mtime_ms: i64,
-    now_ms: i64,
     suppress_toast: bool,
 ) -> Option<SessionMutation> {
     let tail = read_tail_string(path, 48 * 1024)?;
@@ -565,7 +597,7 @@ fn parse_claude_transcript(
     let mut title: Option<String> = None;
     let mut latest_tool: Option<String> = None;
     let mut latest_summary: Option<String> = None;
-    let mut awaiting_continuation = false;
+    let mut phase = SessionPhase::Idle;
     let mut step_count = 0u32;
 
     for line in tail.lines() {
@@ -594,7 +626,7 @@ fn parse_claude_transcript(
                 title = Some(lp.to_string());
             }
         } else if entry_type == "user" {
-            awaiting_continuation = true;
+            phase = SessionPhase::Working;
             if let Some(content_str) = v
                 .get("message")
                 .and_then(|m| m.get("content"))
@@ -604,12 +636,12 @@ fn parse_claude_transcript(
                     title = Some(content_str.to_string());
                 }
             }
-        } else if entry_type == "assistant" {
-            if let Some(blocks) = v
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-            {
+        } else if entry_type == "system"
+            && v.get("subtype").and_then(Value::as_str) == Some("turn_duration")
+        {
+            phase = SessionPhase::Completed;
+        } else if let ("assistant", Some(message)) = (entry_type, v.get("message")) {
+            if let Some(blocks) = message.get("content").and_then(Value::as_array) {
                 let mut has_tool_use = false;
                 for b in blocks {
                     let btype = b.get("type").and_then(|x| x.as_str()).unwrap_or("");
@@ -636,7 +668,14 @@ fn parse_claude_transcript(
                         }
                     }
                 }
-                awaiting_continuation = has_tool_use;
+                if has_tool_use {
+                    phase = SessionPhase::Working;
+                } else if matches!(
+                    message.get("stop_reason").and_then(Value::as_str),
+                    Some("end_turn" | "stop_sequence")
+                ) {
+                    phase = SessionPhase::Completed;
+                }
             }
         }
     }
@@ -651,20 +690,14 @@ fn parse_claude_transcript(
         return None;
     }
 
-    let is_working = awaiting_continuation && (now_ms - mtime_ms) < 40_000;
-
     Some(SessionMutation {
         raw_session_id: sid,
         provider: AgentProvider::ClaudeCode,
         cwd,
         git_branch,
         title,
-        phase: if is_working {
-            SessionPhase::Working
-        } else {
-            SessionPhase::Completed
-        },
-        current_action: if is_working {
+        phase,
+        current_action: if phase == SessionPhase::Working {
             latest_tool.or_else(|| Some("正在思考…".to_string()))
         } else {
             None

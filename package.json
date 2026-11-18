@@ -1,7 +1,7 @@
 {
   "name": "agent-cue",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Cross-platform floating HUD & completion notifier for Codex, Claude Code, and Antigravity",
   "type": "module",
   "scripts": {

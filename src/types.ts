@@ -7,7 +7,7 @@ export type SessionPhase =
   | "failed"
   | "idle";
 
-export type SourceChannel = "hook" | "passive" | "demo";
+export type SourceChannel = "hook" | "passive";
 
 export interface AgentSession {
   id: string;

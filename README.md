@@ -2,6 +2,21 @@
 
 跨平台（**macOS + Windows**）轻量级 AI Coding Agent 悬浮进度胶囊与完成弹窗提醒工具，基于 **Tauri v2 + Rust + React + Tailwind CSS** 构建，统一监控 **Claude Code**、**Codex** 与 **Google Antigravity**。
 
+[下载 AgentCue 安装包](https://github.com/Mucheen/AgentCue/releases/latest)
+
+## 界面演示
+
+悬浮胶囊显示正在运行的 Agent 数量，点击即可展开会话面板。
+
+![悬浮胶囊显示两个正在运行的会话](docs/screenshots/capsule.png)
+
+| 会话面板 | 桌面通知 |
+| --- | --- |
+| ![会话面板显示 Antigravity 待确认、Codex 运行中、Claude Code 已完成](docs/screenshots/session-panel.png) | ![右上角叠放的权限确认与任务完成通知](docs/screenshots/notifications.png) |
+| 查看当前步骤、运行时间和会话状态。 | 需要确认或任务结束时弹出提醒。 |
+
+以上截图来自 macOS 版，画面使用示例会话数据。
+
 ## 核心特性
 
 - **常驻无焦点悬浮窗（双模式可切换）**：
@@ -11,7 +26,8 @@
   - **被动只读监听**：启动即自动只读扫描 Antigravity `conversation_summaries.db` / `transcript.jsonl`、Codex `rollout-*.jsonl` 与 Claude Code `projects/**/*.jsonl`，零配置展示当前任务与工具步骤。
   - **跨平台 Hook 伴侣（`agent-ing-hook`）**：通过本地 `127.0.0.1` 转发，接入时备份客户端配置并保留已有第三方钩子。
 - **独立角落完成 / 阻塞弹窗 (Toast)**：
-  - 任务完成、报错中断或**卡在权限审批（`PermissionRequest`）**时弹出独立悬浮卡片并播放合成提示音，支持一键跳回对应终端或 IDE 窗口。
+  - 任务结束或需要用户确认时弹出独立悬浮卡片并播放合成提示音。普通输出更新会话面板。
+  - 支持跳回 Codex 桌面会话及 macOS 上的 Antigravity 桌面会话。Antigravity 的跳转需要辅助功能权限。
 
 ## 本地开发与构建
 

@@ -63,7 +63,6 @@ impl SessionPhase {
 pub enum SourceChannel {
     Hook,
     Passive,
-    Demo,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

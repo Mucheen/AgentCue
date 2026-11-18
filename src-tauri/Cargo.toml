@@ -1,6 +1,6 @@
 [package]
 name = "agent-ing"
-version = "0.1.0"
+version = "0.1.1"
 description = "Cross-platform floating HUD & completion notifier for Codex, Claude Code, and Antigravity"
 authors = ["agent-ing"]
 edition = "2021"
@@ -37,6 +37,28 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 tao = "0.37.1"
 objc2 = "=0.6.4"
+objc2-application-services = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "AXError",
+  "AXUIElement",
+  "HIServices",
+  "libc",
+] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CFArray",
+  "CFDictionary",
+  "CFNumber",
+  "CFString",
+  "CFURL",
+] }
+objc2-core-graphics = { version = "=0.3.2", default-features = false, features = [
+  "std",
+  "CGEvent",
+  "CGEventTypes",
+  "CGRemoteOperation",
+  "libc",
+] }
 objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "std",
   "NSPanel",
@@ -47,6 +69,7 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = [
   "NSColor",
   "NSResponder",
   "NSView",
+  "libc",
 ] }
 objc2-foundation = { version = "=0.3.2", default-features = false, features = [
   "std",
@@ -58,9 +81,8 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = [
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
+  "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
-  "Win32_UI_Input_KeyboardAndMouse",
-  "Win32_System_Threading",
 ] }
 
 [dev-dependencies]

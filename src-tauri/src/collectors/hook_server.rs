@@ -187,6 +187,7 @@ pub fn parse_hook_envelope(env: &HookWireEnvelope) -> Option<SessionMutation> {
         "Notification" => {
             let ntype = p
                 .get("notification_type")
+                .or_else(|| p.get("notificationType"))
                 .or_else(|| p.get("type"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
@@ -195,10 +196,7 @@ pub fn parse_hook_envelope(env: &HookWireEnvelope) -> Option<SessionMutation> {
                 .or_else(|| p.get("title"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if ntype.contains("permission")
-                || ntype.contains("elicitation")
-                || msg.to_ascii_lowercase().contains("permission")
-            {
+            if matches!(ntype, "permission_prompt" | "elicitation_dialog") {
                 (
                     SessionPhase::WaitingApproval,
                     Some(if msg.is_empty() {
@@ -207,7 +205,7 @@ pub fn parse_hook_envelope(env: &HookWireEnvelope) -> Option<SessionMutation> {
                         msg.to_string()
                     }),
                 )
-            } else if ntype.contains("idle") {
+            } else if ntype == "idle_prompt" {
                 (SessionPhase::Idle, None)
             } else {
                 return None;
@@ -312,6 +310,28 @@ fn extract_tool_description(p: &Value) -> Option<String> {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn ordinary_notification_text_is_not_an_approval_request() {
+        let mut event = HookWireEnvelope {
+            agent: "claude".into(),
+            event_hint: Some("Notification".into()),
+            client_pid: 1,
+            parent_pid: None,
+            env_hints: HashMap::new(),
+            payload: json!({
+                "session_id": "notice",
+                "notification_type": "auth_success",
+                "message": "The permission check succeeded."
+            }),
+        };
+        assert!(parse_hook_envelope(&event).is_none());
+        event.payload["notification_type"] = json!("permission_prompt");
+        assert_eq!(
+            parse_hook_envelope(&event).unwrap().phase,
+            SessionPhase::WaitingApproval
+        );
+    }
 
     #[test]
     fn parses_antigravity_and_claude_hook_envelopes() {
